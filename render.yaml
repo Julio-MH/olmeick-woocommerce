@@ -1,0 +1,14 @@
+# OLMEICK WooCommerce Bridge — Render.com Blueprint
+services:
+  - type: web
+    name: olmeick-woocommerce
+    runtime: docker
+    dockerfilePath: Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: OLMEICK_SITE_URL
+        value: https://olmeick.vercel.app
+      - key: WORDPRESS_DEBUG
+        value: "false"
