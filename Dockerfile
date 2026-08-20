@@ -1,6 +1,5 @@
 # OLMEICK WooCommerce Bridge — Docker Image
-# Base légère php:8.2-apache, on installe tout nous-mêmes
-# Pas de WordPress préinstallé = pas de entrypoint qui casse tout
+# Base: php:8.2-apache (pas de WordPress préinstallé)
 
 FROM php:8.2-apache
 
@@ -14,7 +13,7 @@ RUN apt-get update && apt-get install -y \
     && docker-php-ext-install zip mysqli pdo pdo_mysql \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Configuration MariaDB optimisée pour 512MB RAM
+# Configuration MariaDB pour 512MB RAM
 RUN printf '[mysqld]\n\
 innodb_buffer_pool_size = 32M\n\
 innodb_log_file_size = 8M\n\
@@ -33,31 +32,40 @@ bind-address = 127.0.0.1\n\
 port = 3306\n\
 socket = /var/run/mysqld/mysqld.sock\n' > /etc/mysql/mariadb.conf.d/99-olmeick.cnf
 
-# Répertoire socket + permissions
+# Répertoire socket
 RUN mkdir -p /var/run/mysqld \
     && chown mysql:mysql /var/run/mysqld \
     && chmod 755 /var/run/mysqld
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FIX 403 FORBIDDEN : Configuration Apache explicite
+# APACHE CONFIG — anti-403 + health check
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Permissions sur /var/www/html au BUILD TIME
-RUN chown -R www-data:www-data /var/www/html \
-    && find /var/www/html -type d -exec chmod 755 {} \; \
-    && find /var/www/html -type f -exec chmod 644 {} \;
+# VirtualHost sur le port 8080 avec tout autorisé
+RUN printf '<VirtualHost *:8080>\n\
+    ServerName olmeick-woocommerce\n\
+    DocumentRoot /var/www/html\n\
+\n\
+    <Directory /var/www/html>\n\
+        Options -Indexes +FollowSymLinks +MultiViews\n\
+        AllowOverride All\n\
+        Require all granted\n\
+    </Directory>\n\
+\n\
+    # Health check pour Render WAF\n\
+    <Location "/health">\n\
+        Require all granted\n\
+    </Location>\n\
+\n\
+    ErrorLog ${APACHE_LOG_DIR}/error.log\n\
+    CustomLog ${APACHE_LOG_DIR}/access.log combined\n\
+</VirtualHost>\n' > /etc/apache2/sites-available/000-default.conf
 
-# Apache : autorisation explicite sur /var/www/html + modules
-RUN echo '<Directory /var/www/html>\n\
-    Options -Indexes +FollowSymLinks +MultiViews\n\
-    AllowOverride All\n\
-    Require all granted\n\
-</Directory>\n' > /etc/apache2/conf-available/olmeick.conf \
-    && a2enconf olmeick \
-    && a2enmod rewrite \
-    && a2enmod headers \
-    && a2enmod proxy \
-    && a2enmod proxy_http
+# Écouter sur 8080
+RUN printf 'Listen 8080\n' > /etc/apache2/ports.conf
+
+# Activer les modules
+RUN a2enmod rewrite headers proxy proxy_http
 
 # Installer WP-CLI
 RUN curl -sO https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
@@ -67,7 +75,10 @@ RUN curl -sO https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cl
 COPY start.sh /usr/local/bin/start.sh
 RUN chmod +x /usr/local/bin/start.sh
 
-# Port Render (variable d'env dynamique)
+# Port Render
+EXPOSE 8080
+
+# Variables
 ENV PORT=8080
 ENV OLMEICK_SITE_URL=https://olmeick.vercel.app
 
