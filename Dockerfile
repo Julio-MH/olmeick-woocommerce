@@ -15,6 +15,8 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Configuration MariaDB optimisée pour 512MB RAM
+# skip-name-resolve = pas de DNS lookup (plus rapide)
+# bind-address = 127.0.0.1 pour TCP local
 RUN printf '[mysqld]\n\
 innodb_buffer_pool_size = 32M\n\
 innodb_log_file_size = 8M\n\
@@ -30,10 +32,13 @@ tmp_table_size = 16M\n\
 max_heap_table_size = 16M\n\
 skip-name-resolve\n\
 bind-address = 127.0.0.1\n\
-port = 3306\n' > /etc/mysql/mariadb.conf.d/99-olmeick.cnf
+port = 3306\n\
+socket = /var/run/mysqld/mysqld.sock\n' > /etc/mysql/mariadb.conf.d/99-olmeick.cnf
 
-# Répertoire socket
-RUN mkdir -p /var/run/mysqld && chown mysql:mysql /var/run/mysqld && chmod 755 /var/run/mysqld
+# Répertoire socket + permissions
+RUN mkdir -p /var/run/mysqld \
+    && chown mysql:mysql /var/run/mysqld \
+    && chmod 755 /var/run/mysqld
 
 # Installer WP-CLI
 RUN curl -sO https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
