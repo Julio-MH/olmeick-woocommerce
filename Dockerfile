@@ -1,40 +1,53 @@
 # OLMEICK WooCommerce Bridge — Docker Image
-# WordPress + WooCommerce + MariaDB dans un seul conteneur
-# Optimisé pour Render.com Free Tier (512MB RAM)
+# Base légère php:8.2-apache, on installe tout nous-mêmes
+# Pas de WordPress préinstallé = pas de entrypoint qui casse tout
 
-FROM wordpress:6.7-php8.2-apache
+FROM php:8.2-apache
 
-# Installer MariaDB (plus léger que MySQL sur 512MB)
+# Installer MariaDB + dépendances PHP
 RUN apt-get update && apt-get install -y \
     mariadb-server \
     mariadb-client \
-    && rm -rf /var/lib/apt/lists/*
+    libzip-dev \
+    unzip \
+    curl \
+    && docker-php-ext-install zip mysqli pdo pdo_mysql \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Configuration MariaDB optimisée pour 512MB RAM
-RUN printf '[mysqld]\ninnodb_buffer_pool_size = 32M\ninnodb_log_file_size = 8M\ninnodb_log_buffer_size = 4M\ninnodb_file_per_table = 1\nmax_allowed_packet = 8M\nkey_buffer_size = 16M\ntable_open_cache = 64\nsort_buffer_size = 256K\nread_buffer_size = 256K\nthread_cache_size = 4\ntmp_table_size = 16M\nmax_heap_table_size = 16M\nskip-name-resolve\nbind-address = 127.0.0.1\nport = 3306\n' > /etc/mysql/mariadb.conf.d/99-olmeick.cnf
+RUN printf '[mysqld]\n\
+innodb_buffer_pool_size = 32M\n\
+innodb_log_file_size = 8M\n\
+innodb_log_buffer_size = 4M\n\
+innodb_file_per_table = 1\n\
+max_allowed_packet = 8M\n\
+key_buffer_size = 16M\n\
+table_open_cache = 64\n\
+sort_buffer_size = 256K\n\
+read_buffer_size = 256K\n\
+thread_cache_size = 4\n\
+tmp_table_size = 16M\n\
+max_heap_table_size = 16M\n\
+skip-name-resolve\n\
+bind-address = 127.0.0.1\n\
+port = 3306\n' > /etc/mysql/mariadb.conf.d/99-olmeick.cnf
 
-# Créer le répertoire de socket MySQL
+# Répertoire socket
 RUN mkdir -p /var/run/mysqld && chown mysql:mysql /var/run/mysqld && chmod 755 /var/run/mysqld
 
-# Script de démarrage (MySQL + WordPress + WooCommerce)
+# Installer WP-CLI
+RUN curl -sO https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
+    && chmod +x wp-cli.phar && mv wp-cli.phar /usr/local/bin/wp
+
+# Script de démarrage
 COPY start.sh /usr/local/bin/start.sh
 RUN chmod +x /usr/local/bin/start.sh
 
-# Variables d'environnement pour WordPress
-ENV WORDPRESS_DB_HOST=127.0.0.1:3306
-ENV WORDPRESS_DB_USER=olmeick
-ENV WORDPRESS_DB_PASSWORD=olmeick_wc_2026
-ENV WORDPRESS_DB_NAME=woocommerce
-ENV WORDPRESS_TABLE_PREFIX=wp_
-ENV WORDPRESS_DEBUG=false
-
-# Variables OLMEICK pour la sync
-ENV OLMEICK_SITE_URL=https://olmeick.vercel.app
-ENV OLMEICK_SUPABASE_URL=
-ENV OLMEICK_SUPABASE_SERVICE_KEY=
-
-# Exposer le port
+# Port Render
 EXPOSE 8080
 
-# Démarrer
-CMD ["/usr/local/bin/start.sh"]
+# Variables
+ENV OLMEICK_SITE_URL=https://olmeick.vercel.app
+
+ENTRYPOINT ["/usr/local/bin/start.sh"]
+CMD ["apache2-foreground"]
