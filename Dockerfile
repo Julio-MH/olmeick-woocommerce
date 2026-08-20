@@ -1,21 +1,20 @@
 # OLMEICK WooCommerce Bridge — Docker Image
-# WordPress + WooCommerce + MySQL dans un seul conteneur
+# WordPress + WooCommerce + MariaDB dans un seul conteneur
 # Optimisé pour Render.com Free Tier (512MB RAM)
 
 FROM wordpress:6.7-php8.2-apache
 
-# Installer MySQL
+# Installer MariaDB (plus léger que MySQL sur 512MB)
 RUN apt-get update && apt-get install -y \
-    default-mysql-server \
-    default-mysql-client \
+    mariadb-server \
+    mariadb-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Pré-configurer MySQL
-RUN mkdir -p /var/run/mysqld && chown mysql:mysql /var/run/mysqld
+# Configuration MariaDB optimisée pour 512MB RAM
+RUN printf '[mysqld]\ninnodb_buffer_pool_size = 32M\ninnodb_log_file_size = 8M\ninnodb_log_buffer_size = 4M\ninnodb_file_per_table = 1\nmax_allowed_packet = 8M\nkey_buffer_size = 16M\ntable_open_cache = 64\nsort_buffer_size = 256K\nread_buffer_size = 256K\nthread_cache_size = 4\ntmp_table_size = 16M\nmax_heap_table_size = 16M\nskip-name-resolve\nbind-address = 127.0.0.1\nport = 3306\n' > /etc/mysql/mariadb.conf.d/99-olmeick.cnf
 
-# Script d'initialisation MySQL
-COPY init-mysql.sh /usr/local/bin/init-mysql.sh
-RUN chmod +x /usr/local/bin/init-mysql.sh
+# Créer le répertoire de socket MySQL
+RUN mkdir -p /var/run/mysqld && chown mysql:mysql /var/run/mysqld && chmod 755 /var/run/mysqld
 
 # Script de démarrage (MySQL + WordPress + WooCommerce)
 COPY start.sh /usr/local/bin/start.sh
