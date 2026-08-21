@@ -1,19 +1,23 @@
 #!/bin/bash
-# OLMEICK WooCommerce Bridge — Script de démarrage
-# Fix 403 WAF Render: health check + permissions propres
+# OLMEICK WooCommerce Bridge — Script de démarrage robuste
+# Optimisé pour Render Free Tier (512MB RAM, stockage éphémère)
 
-set -e
+# PAS de set -e — on gère les erreurs nous-mêmes
 
 WP_DIR="/var/www/html"
 MYSQL_SOCKET="/var/run/mysqld/mysqld.sock"
 WC_FLAG="$WP_DIR/.wc-installed"
 API_KEY_FLAG="$WP_DIR/.api-keys-created"
 HTTP_PORT="${PORT:-8080}"
+LOG_PREFIX="[OLMEICK]"
 
-echo "========================================="
-echo "  OLMEICK WooCommerce Bridge"
-echo "  Port: $HTTP_PORT"
-echo "========================================="
+log() { echo "$LOG_PREFIX $1"; }
+err() { echo "$LOG_PREFIX ❌ $1" >&2; }
+
+log "========================================="
+log "  OLMEICK WooCommerce Bridge"
+log "  Port: $HTTP_PORT"
+log "========================================="
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HEALTH CHECK — Render WAF a besoin d'un 200 sur /health
@@ -26,27 +30,41 @@ HEALTH
 chmod 644 "$WP_DIR/health"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1. MariaDB — Socket UNIX
+# 1. MariaDB — Socket UNIX (optimisé 512MB)
 # ══════════════════════════════════════════════════════════════════════════════
 
-echo "[1/5] MariaDB..."
+log "[1/5] MariaDB..."
 
-# --- Initialisation ---
-if [ ! -d /var/lib/mysql/mysql ]; then
-    echo "  → Initialisation..."
+# Créer le répertoire socket
+mkdir -p /var/run/mysqld
+chown mysql:mysql /var/run/mysqld
+chmod 755 /var/run/mysqld
+
+# --- Initialisation (premier lancement ou stockage perdu) ---
+if [ ! -d /var/lib/mysql/mysql ] || [ ! -S "$MYSQL_SOCKET" ]; then
+    log "  → Initialisation de MariaDB..."
+
+    # Nettoyer les données corrompues si elles existent partiellement
+    if [ -d /var/lib/mysql/mysql ] && [ ! -S "$MYSQL_SOCKET" ]; then
+        log "  → Données partielles détectées, réinitialisation..."
+        rm -rf /var/lib/mysql/*
+    fi
 
     mysql_install_db --user=mysql --datadir=/var/lib/mysql > /dev/null 2>&1 || \
     mariadb-install-db --user=mysql --datadir=/var/lib/mysql > /dev/null 2>&1 || \
-    { echo "  → ❌ Échec init MariaDB"; exit 1; }
+    { err "Échec init MariaDB"; exit 1; }
 
+    log "  → Démarrage temporaire pour création DB..."
     mysqld --user=mysql --datadir=/var/lib/mysql \
         --skip-networking \
         --socket="$MYSQL_SOCKET" \
-        --pid-file="$MYSQL_SOCKET.pid" &
+        --pid-file="$MYSQL_SOCKET.pid" \
+        --innodb-buffer-pool-size=16M \
+        --key-buffer-size=8M &
 
-    echo "  → Attente socket..."
+    # Attendre le socket (max 45s)
     MYSQL_READY=0
-    for i in $(seq 1 30); do
+    for i in $(seq 1 45); do
         if [ -S "$MYSQL_SOCKET" ]; then
             if mysql --socket="$MYSQL_SOCKET" -u root -e "SELECT 1" >/dev/null 2>&1; then
                 MYSQL_READY=1
@@ -54,13 +72,20 @@ if [ ! -d /var/lib/mysql/mysql ]; then
             fi
         fi
         sleep 1
+        if [ $((i % 10)) -eq 0 ]; then
+            log "  → Attente MariaDB... (${i}s)"
+        fi
     done
 
     if [ "$MYSQL_READY" -ne 1 ]; then
-        echo "  → ❌ MariaDB pas prêt"
+        err "MariaDB pas prêt après 45s"
+        # Diagnostic
+        log "  → ls /var/lib/mysql/: $(ls /var/lib/mysql/ 2>&1 | head -5)"
+        log "  → Socket exists: $([ -S "$MYSQL_SOCKET" ] && echo YES || echo NO)"
         exit 1
     fi
 
+    log "  → Création de la base de données..."
     mysql --socket="$MYSQL_SOCKET" -u root <<-'EOSQL'
         CREATE DATABASE IF NOT EXISTS woocommerce CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
         CREATE USER IF NOT EXISTS 'olmeick'@'localhost' IDENTIFIED BY 'olmeick_wc_2026';
@@ -71,21 +96,32 @@ if [ ! -d /var/lib/mysql/mysql ]; then
         FLUSH PRIVILEGES;
 EOSQL
 
+    log "  → Arrêt temporaire..."
     mysqladmin --socket="$MYSQL_SOCKET" -u root shutdown 2>/dev/null || true
-    wait || true
+    sleep 2
     rm -f "$MYSQL_SOCKET" "$MYSQL_SOCKET.pid"
-    echo "  → ✅ Init OK"
+    log "  → ✅ Init OK"
 fi
 
-# --- Démarrage ---
-echo "  → Démarrage MariaDB..."
+# --- Démarrage permanent ---
+log "  → Démarrage MariaDB..."
 mysqld --user=mysql --datadir=/var/lib/mysql \
     --socket="$MYSQL_SOCKET" \
     --pid-file="$MYSQL_SOCKET.pid" \
-    --skip-name-resolve &
+    --skip-name-resolve \
+    --innodb-buffer-pool-size=32M \
+    --key-buffer-size=16M \
+    --max-allowed-packet=8M \
+    --tmp-table-size=8M \
+    --max-heap-table-size=8M \
+    --table-open-cache=32 \
+    --sort-buffer-size=128K \
+    --read-buffer-size=128K \
+    --thread-cache-size=2 &
 
+# Attendre le socket (max 45s)
 MYSQL_READY=0
-for i in $(seq 1 30); do
+for i in $(seq 1 45); do
     if [ -S "$MYSQL_SOCKET" ]; then
         if mysql --socket="$MYSQL_SOCKET" -u root -e "SELECT 1" >/dev/null 2>&1; then
             MYSQL_READY=1
@@ -93,16 +129,20 @@ for i in $(seq 1 30); do
         fi
     fi
     sleep 1
+    if [ $((i % 10)) -eq 0 ]; then
+        log "  → Attente MariaDB... (${i}s)"
+    fi
 done
 
 if [ "$MYSQL_READY" -ne 1 ]; then
-    echo "  → ❌ MariaDB pas démarré"
+    err "MariaDB pas démarré après 45s"
     exit 1
 fi
-echo "  → ✅ MariaDB actif"
+log "  → ✅ MariaDB actif"
 
-# Vérifier user
+# Vérifier/créer l'utilisateur
 if ! mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 -e "USE woocommerce" 2>/dev/null; then
+    log "  → Recréation de l'utilisateur..."
     mysql --socket="$MYSQL_SOCKET" -u root <<-'EOSQL2'
         CREATE USER IF NOT EXISTS 'olmeick'@'localhost' IDENTIFIED BY 'olmeick_wc_2026';
         GRANT ALL PRIVILEGES ON woocommerce.* TO 'olmeick'@'localhost';
@@ -112,51 +152,90 @@ if ! mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 -e "USE woocomm
 EOSQL2
 fi
 
+# Vérifier que la DB est accessible
+DB_TEST=$(mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='woocommerce'" -N 2>/dev/null || echo "FAIL")
+log "  → Tables dans woocommerce: $DB_TEST"
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 2. WordPress — Socket UNIX
 # ══════════════════════════════════════════════════════════════════════════════
 
-echo "[2/5] WordPress..."
+log "[2/5] WordPress..."
 
 if [ ! -f "$WP_DIR/wp-includes/version.php" ]; then
-    echo "  → Téléchargement..."
+    log "  → Téléchargement de WordPress..."
     rm -rf "$WP_DIR"/*
     curl -sL https://wordpress.org/latest.tar.gz | tar xz --strip-components=1 -C "$WP_DIR"
+    log "  → ✅ Téléchargé"
 fi
 
+# Toujours recréer wp-config.php (au cas où les salts changent)
 rm -f "$WP_DIR/wp-config.php"
 cp "$WP_DIR/wp-config-sample.php" "$WP_DIR/wp-config.php"
 
 KEYS=$(curl -s https://api.wordpress.org/secret-key/1.1/salt/ 2>/dev/null || echo "")
 
-sed -i "s/database_name_here/woocommerce/" "$WP_DIR/wp-config.php"
-sed -i "s/username_here/olmeick/" "$WP_DIR/wp-config.php"
-sed -i "s/password_here/olmeick_wc_2026/" "$WP_DIR/wp-config.php"
-sed -i "s|localhost|localhost:/var/run/mysqld/mysqld.sock|" "$WP_DIR/wp-config.php"
+# Configuration DB via PHP (plus fiable que sed)
+cat > "$WP_DIR/wp-config.php" <<'WPCONFIG'
+<?php
+define('DB_NAME', 'woocommerce');
+define('DB_USER', 'olmeick');
+define('DB_PASSWORD', 'olmeick_wc_2026');
+define('DB_HOST', 'localhost:/var/run/mysqld/mysqld.sock');
+define('DB_CHARSET', 'utf8mb4');
+define('DB_COLLATE', 'utf8mb4_unicode_ci');
+WPCONFIG
 
+# Ajouter les salts
 if [ -n "$KEYS" ]; then
-    sed -i "/AUTH_KEY/d; /SECURE_AUTH_KEY/d; /LOGGED_IN_KEY/d; /NONCE_KEY/d; /AUTH_SALT/d; /SECURE_AUTH_SALT/d; /LOGGED_IN_SALT/d; /NONCE_SALT/d" "$WP_DIR/wp-config.php"
     echo "$KEYS" >> "$WP_DIR/wp-config.php"
+else
+    # Salts de fallback si l'API WordPress est down
+    cat >> "$WP_DIR/wp-config.php" <<'SALTS'
+define('AUTH_KEY',         'OLMEICK-bridge-auth-key-2026!xK9m');
+define('SECURE_AUTH_KEY',  'OLMEICK-bridge-secure-auth-2026!pL3n');
+define('LOGGED_IN_KEY',    'OLMEICK-bridge-logged-in-2026!jH7v');
+define('NONCE_KEY',        'OLMEICK-bridge-nonce-key-2026!wR5t');
+define('AUTH_SALT',        'OLMEICK-bridge-auth-salt-2026!mB2q');
+define('SECURE_AUTH_SALT', 'OLMEICK-bridge-secure-salt-2026!kN8f');
+define('LOGGED_IN_SALT',   'OLMEICK-bridge-logged-salt-2026!dY4s');
+define('NONCE_SALT',       'OLMEICK-bridge-nonce-salt-2026!uG6w');
+SALTS
 fi
 
+# Table prefix + SSL proxy + URLs
 cat >> "$WP_DIR/wp-config.php" <<'WPEOF'
+$table_prefix = 'wp_';
 
 if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
     $_SERVER['HTTPS'] = 'on';
 }
 define('WP_HOME', getenv('OLMEICK_SITE_URL') ?: 'https://olmeick.vercel.app');
 define('WP_SITEURL', getenv('OLMEICK_SITE_URL') ?: 'https://olmeick.vercel.app');
+
+/* Debug — commenter en prod */
+// define('WP_DEBUG', true);
+// define('WP_DEBUG_LOG', true);
+
+if (!defined('ABSPATH')) define('ABSPATH', __DIR__ . '/');
+require_once ABSPATH . 'wp-settings.php';
 WPEOF
 
-php -r "\$l = @new mysqli('localhost','olmeick','olmeick_wc_2026','woocommerce',0,'/var/run/mysqld/mysqld.sock'); echo \$l->connect_error ? '❌'.\$l->connect_error : '✅ DB OK'; echo PHP_EOL;" 2>&1 || true
+# Test de connexion DB via PHP
+log "  → Test connexion DB..."
+php -r "
+\$l = @new mysqli('localhost','olmeick','olmeick_wc_2026','woocommerce',0,'/var/run/mysqld/mysqld.sock');
+echo \$l->connect_error ? '❌ '.\$l->connect_error : '✅ DB OK';
+echo PHP_EOL;
+" 2>&1 || log "  → ⚠️ Test PHP échoué (non bloquant)"
 
-echo "  → ✅ wp-config.php OK"
+log "  → ✅ wp-config.php OK"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. wp core install
 # ══════════════════════════════════════════════════════════════════════════════
 
-echo "[3/5] Installation WordPress..."
+log "[3/5] Installation WordPress..."
 if ! wp core is-installed --path="$WP_DIR" --allow-root 2>/dev/null; then
     wp core install \
         --url="https://olmeick-woocommerce.onrender.com" \
@@ -165,19 +244,19 @@ if ! wp core is-installed --path="$WP_DIR" --allow-root 2>/dev/null; then
         --admin_password=OLMEICK_admin_2026 \
         --admin_email=bridge@olmeick.com \
         --path="$WP_DIR" \
-        --allow-root 2>&1 || true
-    echo "  → ✅ Installé"
+        --allow-root 2>&1 || log "  → ⚠️ Install WP échoué (peut-être déjà installé)"
+    log "  → ✅ Installé"
 else
-    echo "  → ✅ Déjà installé"
+    log "  → ✅ Déjà installé"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. WooCommerce
 # ══════════════════════════════════════════════════════════════════════════════
 
-echo "[4/5] WooCommerce..."
+log "[4/5] WooCommerce..."
 if [ ! -f "$WC_FLAG" ]; then
-    wp plugin install woocommerce --activate --path="$WP_DIR" --allow-root 2>&1 || true
+    wp plugin install woocommerce --activate --path="$WP_DIR" --allow-root 2>&1 || log "  → ⚠️ WC install échoué"
     wp option update woocommerce_store_address "Cotonou" --path="$WP_DIR" --allow-root 2>/dev/null || true
     wp option update woocommerce_store_city "Cotonou" --path="$WP_DIR" --allow-root 2>/dev/null || true
     wp option update woocommerce_default_country "BJ" --path="$WP_DIR" --allow-root 2>/dev/null || true
@@ -186,20 +265,22 @@ if [ ! -f "$WC_FLAG" ]; then
     wp rewrite structure '/%postname%/' --path="$WP_DIR" --allow-root 2>/dev/null || true
     wp rewrite flush --path="$WP_DIR" --allow-root 2>/dev/null || true
     touch "$WC_FLAG"
-    echo "  → ✅ Installé"
+    log "  → ✅ Installé"
 else
-    echo "  → ✅ Déjà installé"
+    log "  → ✅ Déjà installé"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 5. Clés API REST
 # ══════════════════════════════════════════════════════════════════════════════
 
-echo "[5/5] Clés API REST..."
+log "[5/5] Clés API REST..."
 if [ ! -f "$API_KEY_FLAG" ]; then
     KEY_OUTPUT=$(wp wc tool run generate_api_key --user=admin --path="$WP_DIR" --allow-root 2>&1 || echo "")
-    echo "  → $KEY_OUTPUT"
+    log "  → $KEY_OUTPUT"
     touch "$API_KEY_FLAG"
+else
+    log "  → ✅ Déjà créées"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -227,10 +308,14 @@ RewriteRule . /index.php [L]
 HTEOF
 chmod 644 "$WP_DIR/.htaccess"
 
-echo "========================================="
-echo "  OLMEICK WooCommerce Bridge ✅"
-echo "  MariaDB ✅ | WordPress ✅ | WC ✅"
-echo "  Port: $HTTP_PORT | Health: /health"
-echo "========================================="
+# ══════════════════════════════════════════════════════════════════════════════
+# RÉSUMÉ
+# ══════════════════════════════════════════════════════════════════════════════
+
+log "========================================="
+log "  OLMEICK WooCommerce Bridge ✅"
+log "  MariaDB ✅ | WordPress ✅ | WC ✅"
+log "  Port: $HTTP_PORT | Health: /health"
+log "========================================="
 
 exec apache2-foreground
