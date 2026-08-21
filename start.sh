@@ -271,33 +271,96 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5. Clés API REST
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. Clés API REST — via endpoint PHP (wc_generate_api_key)
 # ══════════════════════════════════════════════════════════════════════════════
 
 log "[5/5] Clés API REST..."
-# Toujours régénérer (stockage éphémère Render)
-rm -f "$API_KEY_FLAG"
 
-# Generer les cles via WP-CLI (methode officielle WooCommerce)
-KEY_OUTPUT=$(wp wc tool run generate_api_key --user=admin --path="$WP_DIR" --allow-root 2>&1 || echo "")
-log "  -> $KEY_OUTPUT"
+# Endpoint PHP pour générer les clés via WooCommerce (accessibles avant rewrite WP)
+cat > "$WP_DIR/api-keys.php" <<'APIKEYS_PHP'
+<?php
+error_reporting(0);
+header('Content-Type: application/json');
+if (file_exists('/var/www/html/wp-load.php')) {
+    require_once('/var/www/html/wp-load.php');
+} else {
+    http_response_code(500);
+    echo json_encode(array('error' => 'WordPress not found'));
+    exit;
+}
+if (!function_exists('wc_generate_api_key')) {
+    if (file_exists(WP_PLUGIN_DIR . '/woocommerce/woocommerce.php')) {
+        require_once WP_PLUGIN_DIR . '/woocommerce/woocommerce.php';
+    }
+}
+if (!function_exists('wc_generate_api_key')) {
+    echo json_encode(array('error' => 'WooCommerce not loaded', 'wc' => defined('WC_VERSION') ? WC_VERSION : 'N/A'));
+    exit;
+}
+global $wpdb;
+$row = $wpdb->get_row("SELECT key_id, consumer_key, consumer_secret, user_id, permissions FROM {$wpdb->prefix}woocommerce_api_keys ORDER BY key_id DESC LIMIT 1");
+if ($row && !empty($row->consumer_key)) {
+    $ck_dec = @base64_decode($row->consumer_key);
+    $cs_dec = @base64_decode($row->consumer_secret);
+    if ($ck_dec && strpos($ck_dec, 'ck_') === 0) {
+        echo json_encode(array(
+            'consumer_key' => $ck_dec,
+            'consumer_secret' => $cs_dec,
+            'key_id' => intval($row->key_id),
+            'source' => 'existing_db'
+        ));
+        exit;
+    }
+}
+$admin = get_user_by('login', 'admin');
+if (!$admin) $admin = get_userdata(1);
+if (!$admin) { echo json_encode(array('error' => 'No admin user')); exit; }
+$result = wc_generate_api_key(array(
+    'user_id' => intval($admin->ID),
+    'description' => 'OLMEICK Bridge',
+    'permissions' => 'read_write'
+));
+if (is_wp_error($result)) {
+    echo json_encode(array('error' => $result->get_error_message()));
+    exit;
+}
+echo json_encode(array(
+    'consumer_key' => $result['consumer_key'],
+    'consumer_secret' => $result['consumer_secret'],
+    'key_id' => intval($result['key_id']),
+    'source' => 'newly_generated'
+));
+APIKEYS_PHP
+chmod 644 "$WP_DIR/api-keys.php"
+log "  -> /api-keys.php created"
 
-# Sauvegarder les cles dans un fichier JSON accessible via HTTP
-CK=$(mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -N -e "SELECT consumer_key FROM wp_woocommerce_api_keys ORDER BY key_id DESC LIMIT 1;" 2>/dev/null || echo "")
-CS=$(mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -N -e "SELECT consumer_secret FROM wp_woocommerce_api_keys ORDER BY key_id DESC LIMIT 1;" 2>/dev/null || echo "")
+# Générer les clés et les sauvegarder dans un fichier JSON
+KEY_RESULT=$(php "$WP_DIR/api-keys.php" 2>/dev/null || echo '{"error":"php_failed"}')
+log "  -> Key generation result: $(echo "$KEY_RESULT" | head -c 100)"
 
-cat > "$WP_DIR/wc-api-keys.json" <<KEYJSON
+# Extraire consumer_key et consumer_secret du JSON
+CK=$(echo "$KEY_RESULT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('consumer_key',''))" 2>/dev/null || echo "")
+CS=$(echo "$KEY_RESULT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('consumer_secret',''))" 2>/dev/null || echo "")
+
+if [ -n "$CK" ] && [ -n "$CS" ]; then
+    cat > "$WP_DIR/wc-api-keys.json" <<KEYJSON
 {
   "consumer_key": "$CK",
   "consumer_secret": "$CS",
   "store_url": "https://olmeick-woocommerce.onrender.com"
 }
 KEYJSON
-chmod 644 "$WP_DIR/wc-api-keys.json"
-log "  -> Cle: $CK"
-log "  -> Sauvegardees dans /wc-api-keys.json"
+    chmod 644 "$WP_DIR/wc-api-keys.json"
+    log "  -> Consumer Key: $CK"
+    log "  -> Saved to /wc-api-keys.json"
+    log "  -> Also accessible at /api-keys.php"
+else
+    log "  -> WARNING: Keys empty, will need manual generation"
+fi
+
 touch "$API_KEY_FLAG"
-# ══════════════════════════════════════════════════════════════════════════════
+
 # PERMISSIONS + HTACCESS
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -308,10 +371,12 @@ chmod 640 "$WP_DIR/wp-config.php" 2>/dev/null || true
 chmod 644 "$WP_DIR/health" 2>/dev/null || true
 
 cat > "$WP_DIR/.htaccess" <<'HTEOF'
-# Serve /health as static file (before WordPress rewrite)
+# Serve static files before WordPress rewrite
 <IfModule mod_rewrite.c>
 RewriteEngine On
 RewriteRule ^health$ - [L]
+RewriteRule ^api-keys\.php$ - [L]
+RewriteRule ^save-keys\.php$ - [L]
 </IfModule>
 # BEGIN WordPress
 <IfModule mod_rewrite.c>
