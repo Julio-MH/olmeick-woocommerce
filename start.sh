@@ -300,13 +300,13 @@ KEYJSON
 chmod 644 "$WP_DIR/wc-api-keys.json"
 
 # Créer un endpoint PHP pour générer les clés si le fichier est vide
-if [ ! -f "$WP_DIR/generate-keys.php" ]; then
 cat > "$WP_DIR/generate-keys.php" <<'PHPEOF'
 <?php
 // Génère des clés REST API WooCommerce pour l'admin
 header('Content-Type: application/json');
 $_SERVER['PHP_SELF'] = '/wp-admin/admin-ajax.php';
 require_once('/var/www/html/wp-load.php');
+global $wpdb;
 require_once('/var/www/html/wp-admin/includes/user.php');
 // Trouver le fichier functions de WC
 $wc_files = glob(WP_CONTENT_DIR . '/plugins/woocommerce/includes/*rest*function*');
@@ -349,7 +349,6 @@ echo json_encode(['consumer_key' => $key_data->consumer_key, 'consumer_secret' =
 PHPEOF
 chmod 644 "$WP_DIR/generate-keys.php"
 log "  → Endpoint /generate-keys.php créé"
-fi
 log "  → Clés sauvegardées dans /wc-api-keys.json"
 touch "$API_KEY_FLAG"
 
