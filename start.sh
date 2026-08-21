@@ -329,6 +329,7 @@ if (!function_exists('wc_generate_api_key')) {
 
 // Trouver l'admin
 $user = get_user_by('login', 'admin');
+if (!$user) { $users = get_users(['role' => 'administrator', 'number' => 1]); $user = $users[0] ?? null; }
 if (!$user) { echo json_encode(['error' => 'Admin not found']); exit; }
 
 // Vérifier si une clé existe déjà
