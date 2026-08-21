@@ -316,7 +316,7 @@ if (!function_exists('wc_generate_api_key')) {
     $key = 'ck_' . bin2hex(random_bytes(20));
     $secret = 'cs_' . bin2hex(random_bytes(20));
     $wpdb->insert($wpdb->prefix . 'woocommerce_api_keys', [
-        'user_id' => $user->ID,
+        'user_id' => $admin_id,
         'description' => 'OLMEICK Auto-Key',
         'consumer_key' => $key,
         'consumer_secret' => hash('sha256', $secret),
@@ -328,9 +328,8 @@ if (!function_exists('wc_generate_api_key')) {
 }
 
 // Trouver l'admin
-$user = get_user_by('login', 'admin');
-if (!$user) { $users = get_users(['role' => 'administrator', 'number' => 1]); $user = $users[0] ?? null; }
-if (!$user) { echo json_encode(['error' => 'Admin not found']); exit; }
+$admin_id = (int) $wpdb->get_var("SELECT ID FROM {$wpdb->users} ORDER BY ID ASC LIMIT 1");
+if (!$admin_id) { echo json_encode(['error' => 'No users in DB']); exit; }
 
 // Vérifier si une clé existe déjà
 $existing = $wpdb->get_var("SELECT consumer_key FROM {$wpdb->prefix}woocommerce_api_keys WHERE user_id = {$user->ID} ORDER BY key_id DESC LIMIT 1");
@@ -341,7 +340,7 @@ if ($existing) {
 }
 
 // Générer une nouvelle clé
-$key_id = wc_generate_api_key(['user_id' => $user->ID, 'description' => 'OLMEICK Auto-Key']);
+$key_id = wc_generate_api_key(['user_id' => $admin_id, 'description' => 'OLMEICK Auto-Key']);
 if (is_wp_error($key_id)) { echo json_encode(['error' => $key_id->get_error_message()]); exit; }
 
 $key_data = $wpdb->get_row($wpdb->prepare("SELECT consumer_key, consumer_secret FROM {$wpdb->prefix}woocommerce_api_keys WHERE key_id = %d", $key_id));
