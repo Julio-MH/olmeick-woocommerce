@@ -308,7 +308,24 @@ header('Content-Type: application/json');
 $_SERVER['PHP_SELF'] = '/wp-admin/admin-ajax.php';
 require_once('/var/www/html/wp-load.php');
 require_once('/var/www/html/wp-admin/includes/user.php');
-if (!function_exists('wc_generate_api_key')) { require_once(WP_CONTENT_DIR . '/plugins/woocommerce/includes/wc-rest-functions.php'); }
+// Trouver le fichier functions de WC
+$wc_files = glob(WP_CONTENT_DIR . '/plugins/woocommerce/includes/*rest*function*');
+foreach ($wc_files as $f) { require_once($f); }
+if (!function_exists('wc_generate_api_key')) {
+    // Fallback: générer directement en DB
+    $key = 'ck_' . bin2hex(random_bytes(20));
+    $secret = 'cs_' . bin2hex(random_bytes(20));
+    $wpdb->insert($wpdb->prefix . 'woocommerce_api_keys', [
+        'user_id' => $user->ID,
+        'description' => 'OLMEICK Auto-Key',
+        'consumer_key' => $key,
+        'consumer_secret' => hash('sha256', $secret),
+        'nonces' => '',
+        'permissions' => 'read_write',
+    ]);
+    echo json_encode(['consumer_key' => $key, 'consumer_secret' => $secret, 'store_url' => 'https://olmeick-woocommerce.onrender.com', 'source' => 'generated_db']);
+    exit;
+}
 
 // Trouver l'admin
 $user = get_user_by('login', 'admin');
