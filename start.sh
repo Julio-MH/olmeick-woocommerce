@@ -210,8 +210,8 @@ $table_prefix = 'wp_';
 if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
     $_SERVER['HTTPS'] = 'on';
 }
-define('WP_HOME', getenv('OLMEICK_SITE_URL') ?: 'https://olmeick.vercel.app');
-define('WP_SITEURL', getenv('OLMEICK_SITE_URL') ?: 'https://olmeick.vercel.app');
+define('WP_HOME', 'https://olmeick-woocommerce.onrender.com');
+define('WP_SITEURL', 'https://olmeick-woocommerce.onrender.com');
 
 /* Debug — commenter en prod */
 // define('WP_DEBUG', true);
