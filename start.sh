@@ -275,13 +275,31 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 
 log "[5/5] Clés API REST..."
-if [ ! -f "$API_KEY_FLAG" ]; then
-    KEY_OUTPUT=$(wp wc tool run generate_api_key --user=admin --path="$WP_DIR" --allow-root 2>&1 || echo "")
-    log "  → $KEY_OUTPUT"
-    touch "$API_KEY_FLAG"
-else
-    log "  → ✅ Déjà créées"
-fi
+# Toujours régénérer (stockage éphémère Render)
+rm -f "$API_KEY_FLAG"
+
+# Supprimer les anciennes clés
+mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -e "DELETE FROM wp_woocommerce_api_keys WHERE user_id=1;" 2>/dev/null || true
+
+# Générer une nouvelle clé via WP-CLI
+KEY_OUTPUT=$(wp wc tool run generate_api_key --user=admin --path="$WP_DIR" --allow-root 2>&1 || echo "")
+log "  → $KEY_OUTPUT"
+
+# Sauvegarder les clés dans un fichier JSON accessible
+CK=$(mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -N -e "SELECT consumer_key FROM wp_woocommerce_api_keys ORDER BY key_id DESC LIMIT 1;" 2>/dev/null || echo "")
+CS=$(mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -N -e "SELECT consumer_secret FROM wp_woocommerce_api_keys ORDER BY key_id DESC LIMIT 1;" 2>/dev/null || echo "")
+
+cat > "$WP_DIR/wc-api-keys.json" <<KEYJSON
+{
+  "consumer_key": "$CK",
+  "consumer_secret": "$CS",
+  "store_url": "https://olmeick-woocommerce.onrender.com",
+  "note": "Clés auto-générées. Accessibles sans auth."
+}
+KEYJSON
+chmod 644 "$WP_DIR/wc-api-keys.json"
+log "  → Clés sauvegardées dans /wc-api-keys.json"
+touch "$API_KEY_FLAG"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PERMISSIONS + HTACCESS
