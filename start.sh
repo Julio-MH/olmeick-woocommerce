@@ -294,9 +294,13 @@ chmod 640 "$WP_DIR/wp-config.php" 2>/dev/null || true
 chmod 644 "$WP_DIR/health" 2>/dev/null || true
 
 cat > "$WP_DIR/.htaccess" <<'HTEOF'
-# BEGIN WordPress
+# Serve /health as static file (before WordPress rewrite)
 <IfModule mod_rewrite.c>
 RewriteEngine On
+RewriteRule ^health$ - [L]
+</IfModule>
+# BEGIN WordPress
+<IfModule mod_rewrite.c>
 RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 RewriteBase /
 RewriteRule ^index\.php$ - [L]
