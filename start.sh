@@ -308,6 +308,7 @@ header('Content-Type: application/json');
 $_SERVER['PHP_SELF'] = '/wp-admin/admin-ajax.php';
 require_once('/var/www/html/wp-load.php');
 require_once('/var/www/html/wp-admin/includes/user.php');
+if (!function_exists('wc_generate_api_key')) { require_once(WP_CONTENT_DIR . '/plugins/woocommerce/includes/wc-rest-functions.php'); }
 
 // Trouver l'admin
 $user = get_user_by('login', 'admin');
