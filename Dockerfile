@@ -1,5 +1,6 @@
 # OLMEICK WooCommerce Bridge — Docker Image
 # Base: php:8.2-apache (pas de WordPress préinstallé)
+# Optimisé pour Render Free Tier (512MB RAM)
 
 FROM php:8.2-apache
 
@@ -59,7 +60,8 @@ RUN printf '<VirtualHost *:8080>\n\
 \n\
     ErrorLog ${APACHE_LOG_DIR}/error.log\n\
     CustomLog ${APACHE_LOG_DIR}/access.log combined\n\
-</VirtualHost>\n' > /etc/apache2/sites-available/000-default.conf
+</VirtualHost>\n\
+' > /etc/apache2/sites-available/000-default.conf
 
 # Écouter sur 8080
 RUN printf 'Listen 8080\n' > /etc/apache2/ports.conf
