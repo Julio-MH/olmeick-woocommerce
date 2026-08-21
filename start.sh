@@ -304,6 +304,7 @@ cat > "$WP_DIR/generate-keys.php" <<'PHPEOF'
 <?php
 header('Content-Type: application/json');
 $_SERVER['PHP_SELF'] = '/wp-admin/admin-ajax.php';
+$_SERVER['HTTPS'] = 'on';
 require_once('/var/www/html/wp-load.php');
 global $wpdb;
 
@@ -314,17 +315,35 @@ if (!$admin_id) { echo json_encode(['error' => 'No users in DB']); exit; }
 // Supprimer les anciennes clés de cet admin
 $wpdb->delete($wpdb->prefix . 'woocommerce_api_keys', ['user_id' => $admin_id]);
 
-// Générer clé et secret
-$key = 'ck_' . bin2hex(random_bytes(20));
-$secret = 'cs_' . bin2hex(random_bytes(20));
+// Générer clé et secret (format EXACT de WooCommerce)
+$consumer_key = 'ck_' . bin2hex(random_bytes(20));
+$consumer_secret = 'cs_' . bin2hex(random_bytes(20));
+// WC stocke le secret comme sha256 hex
+$hashed_secret = hash('sha256', $consumer_secret);
 $wpdb->insert($wpdb->prefix . 'woocommerce_api_keys', [
     'user_id' => $admin_id,
     'description' => 'OLMEICK Bridge Key',
-    'consumer_key' => $key,
-    'consumer_secret' => hash('sha256', $secret),
+    'consumer_key' => $consumer_key,
+    'consumer_secret' => $hashed_secret,
     'nonces' => '',
     'permissions' => 'read_write',
 ]);
+$key_id = $wpdb->insert_id;
+
+// Vérifier que la clé a bien été créée
+$verify = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$wpdb->prefix}woocommerce_api_keys WHERE key_id = %d", $key_id));
+if (!$verify) { echo json_encode(['error' => 'Key creation failed']); exit; }
+
+echo json_encode([
+    'consumer_key' => $consumer_key,
+    'consumer_secret' => $consumer_secret,
+    'store_url' => 'https://olmeick-woocommerce.onrender.com',
+    'user_id' => $admin_id,
+    'key_id' => $key_id,
+    'permissions' => $verify->permissions,
+    'source' => 'generated'
+]);
+PHPEOF
 
 echo json_encode([
     'consumer_key' => $key,
