@@ -6,7 +6,7 @@ services:
     dockerfilePath: Dockerfile
     dockerContext: .
     plan: free
-    healthCheckPath: /health
+    healthCheckPath: /
     envVars:
       - key: OLMEICK_SITE_URL
         value: https://olmeick.vercel.app
