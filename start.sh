@@ -295,11 +295,12 @@ KEY_RESULT=$(php -r "
 \$db = new mysqli('localhost', 'olmeick', 'olmeick_wc_2026', 'woocommerce', 3306, \$sock);
 if (\$db->connect_error) { echo json_encode(array('error' => \$db->connect_error)); exit; }
 
-\$sql = \$db->prepare('INSERT INTO wp_woocommerce_api_keys (user_id, description, permissions, consumer_key, consumer_secret, date_created) VALUES (?, ?, ?, ?, ?, ?)');
+\$sql = \$db->prepare('INSERT INTO wp_woocommerce_api_keys (user_id, description, permissions, consumer_key, consumer_secret, nonces, date_created) VALUES (?, ?, ?, ?, ?, ?, ?)');
 \$uid = 1;
 \$desc = 'OLMEICK Bridge';
 \$perm = 'read_write';
-\$sql->bind_param('isssss', \$uid, \$desc, \$perm, \$ck_hashed, \$cs, \$ts);
+\$nonces = '';
+\$sql->bind_param('issssss', \$uid, \$desc, \$perm, \$ck_hashed, \$cs, \$nonces, \$ts);
 \$sql->execute();
 \$key_id = \$db->insert_id;
 
