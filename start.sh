@@ -219,17 +219,32 @@ if [ "$EXISTING_KEYS" != "0" ]; then
     fi
 fi
 
-# Méthode 1: MySQL direct (la plus fiable, pas de dépendance PHP/WP-CLI)
+# Méthode 1: PHP $wpdb (pas mysql CLI qui échoue silencieusement)
 if [ -z "$CK_RAW" ] || [ -z "$CS_RAW" ]; then
-    log "  → Generating new keys via MySQL..."
+    log "  → Generating new keys via PHP..."
     CK_RAW="ck_$(head -c 40 /dev/urandom | od -A n -t x1 | tr -d ' \n' | head -c 40)"
     CS_RAW="cs_$(head -c 40 /dev/urandom | od -A n -t x1 | tr -d ' \n' | head -c 40)"
     CK_HASHED=$(echo -n "$CK_RAW" | openssl dgst -sha256 -hmac "wc-api" | awk '{print $2}')
 
-    mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -e \
-        "DELETE FROM wp_woocommerce_api_keys" 2>/dev/null || true
-    mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -e \
-        "INSERT INTO wp_woocommerce_api_keys (user_id, description, permissions, consumer_key, consumer_secret, nonces) VALUES (1, 'OLMEICK Bridge', 'read_write', '$CK_HASHED', '$CS_RAW', '')" 2>&1
+    php -r "
+    define('ABSPATH', '/var/www/html/');
+    require_once ABSPATH . 'wp-load.php';
+    global \$wpdb;
+    \$wpdb->delete(\$wpdb->prefix . 'woocommerce_api_keys');
+    \$wpdb->insert(\$wpdb->prefix . 'woocommerce_api_keys', array(
+        'user_id' => 1,
+        'description' => 'OLMEICK Bridge',
+        'permissions' => 'read_write',
+        'consumer_key' => '$CK_HASHED',
+        'consumer_secret' => '$CS_RAW',
+        'nonces' => ''
+    ));
+    if (\$wpdb->insert_id > 0) {
+        echo 'OK';
+    } else {
+        echo 'ERROR: ' . \$wpdb->last_error;
+    }
+    " 2>&1
 fi
 
 log "  → Consumer Key: $CK_RAW"
