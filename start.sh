@@ -230,11 +230,10 @@ if [ -z "$CK_RAW" ] || [ -z "$CS_RAW" ]; then
     CK_RAW="ck_$(head -c 40 /dev/urandom | od -A n -t x1 | tr -d ' \n' | head -c 40)"
     CS_RAW="cs_$(head -c 40 /dev/urandom | od -A n -t x1 | tr -d ' \n' | head -c 40)"
     CK_HASHED=$(echo -n "$CK_RAW" | openssl dgst -sha256 -hmac "wc-api" | awk '{print $2}')
-    NOW=$(date -u +"%Y-%m-%d %H:%M:%S")
     mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -e \
         "DELETE FROM wp_woocommerce_api_keys" 2>/dev/null || true
     mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -e \
-        "INSERT INTO wp_woocommerce_api_keys (user_id, description, permissions, consumer_key, consumer_secret, nonces, date_created) VALUES (1, 'OLMEICK Bridge', 'read_write', '$CK_HASHED', '$CS_RAW', '', '$NOW')" 2>&1
+        "INSERT INTO wp_woocommerce_api_keys (user_id, description, permissions, consumer_key, consumer_secret, nonces) VALUES (1, 'OLMEICK Bridge', 'read_write', '$CK_HASHED', '$CS_RAW', '')" 2>&1
 fi
 
 log "  → Consumer Key: $CK_RAW"
@@ -379,8 +378,6 @@ if (isset($_GET['fix']) && $_GET['fix'] === '1') {
     $ck = 'ck_' . bin2hex(random_bytes(20));
     $cs = 'cs_' . bin2hex(random_bytes(20));
     $ck_hashed = hash_hmac('sha256', $ck, 'wc-api');
-    $now = gmdate('Y-m-d H:i:s');
-    
     // Insert via $wpdb (WordPress DB layer)
     $inserted = $wpdb->insert(
         $wpdb->prefix . 'woocommerce_api_keys',
@@ -391,9 +388,8 @@ if (isset($_GET['fix']) && $_GET['fix'] === '1') {
             'consumer_key' => $ck_hashed,
             'consumer_secret' => $cs,
             'nonces' => '',
-            'date_created' => $now,
         ),
-        array('%d', '%s', '%s', '%s', '%s', '%s', '%s')
+        array('%d', '%s', '%s', '%s', '%s', '%s')
     );
     
     $result['insert_result'] = $inserted;
