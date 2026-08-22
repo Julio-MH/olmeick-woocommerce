@@ -167,8 +167,13 @@ fi
 wp wc --version --path="$WP_DIR" --allow-root 2>/dev/null || true
 
 # S'assurer que l'admin a les bonnes permissions WC
-wp user add-role 1 shop_manager --path="$WP_DIR" --allow-root 2>&1 || true
-wp user add-role 1 administrator --path="$WP_DIR" --allow-root 2>&1 || true
+wp user update 1 --role=shop_manager --path="$WP_DIR" --allow-root 2>&1 || true
+# Ajouter les caps WC directement (au cas ou le role ne suffit pas)
+wp user add-cap 1 manage_woocommerce --path="$WP_DIR" --allow-root 2>&1 || true
+wp user add-cap 1 edit_products --path="$WP_DIR" --allow-root 2>&1 || true
+wp user add-cap 1 publish_products --path="$WP_DIR" --allow-root 2>&1 || true
+wp user add-cap 1 edit_others_products --path="$WP_DIR" --allow-root 2>&1 || true
+wp user add-cap 1 read_private_products --path="$WP_DIR" --allow-root 2>&1 || true
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 5. Clés API REST — TOUT en bash + MySQL CLI (pas de PHP)
