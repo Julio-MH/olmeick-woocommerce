@@ -1,63 +1,69 @@
 <?php
-// OLMEICK WC Bridge — API Key Generator
-// Accessible at /generate-keys.php (no auth required)
+/**
+ * OLMEICK — Génère des clés API WooCommerce
+ * Stocke consumer_key hashé (hmac-sha256) et consumer_secret en clair.
+ */
 header('Content-Type: application/json');
-$_SERVER['PHP_SELF'] = '/wp-admin/admin-ajax.php';
-$_SERVER['HTTPS'] = 'on';
-require_once('/var/www/html/wp-load.php');
-global $wpdb;
+error_reporting(0);
 
-// Find admin user
-$admin_id = (int) $wpdb->get_var("SELECT ID FROM {$wpdb->users} ORDER BY ID ASC LIMIT 1");
-if (!$admin_id) { echo json_encode(['error' => 'No users in DB']); exit; }
+$sock = '/var/run/mysqld/mysqld.sock';
+$db = new mysqli('localhost', 'olmeick', 'olmeick_wc_2026', 'woocommerce', 3306, $sock);
 
-// Load WooCommerce functions
-$wc_api_file = WP_CONTENT_DIR . '/plugins/woocommerce/includes/class-wc-rest-api.php';
-if (file_exists($wc_api_file)) { require_once($wc_api_file); }
-$wc_auth_file = WP_CONTENT_DIR . '/plugins/woocommerce/includes/wc-rest-functions.php';
-if (file_exists($wc_auth_file)) { require_once($wc_auth_file); }
-
-// Delete old keys
-$wpdb->delete($wpdb->prefix . 'woocommerce_api_keys', ['user_id' => $admin_id]);
-
-// Try official WC function first
-if (function_exists('wc_generate_api_key')) {
-    $key_id = wc_generate_api_key(['user_id' => $admin_id, 'description' => 'OLMEICK Bridge Key']);
-    if (!is_wp_error($key_id)) {
-        $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$wpdb->prefix}woocommerce_api_keys WHERE key_id = %d", $key_id));
-        // Return the key_id as secret reference (WC returns key_id, not raw secret)
-        echo json_encode([
-            'consumer_key' => $row->consumer_key,
-            'consumer_secret' => 'Use key_id:' . $key_id . ' — secret was hashed by WC',
-            'store_url' => 'https://olmeick-woocommerce.onrender.com',
-            'user_id' => $admin_id,
-            'key_id' => $key_id,
-            'source' => 'wc_function'
-        ]);
-        exit;
-    }
+if ($db->connect_error) {
+    echo json_encode(['error' => 'DB: ' . $db->connect_error]);
+    exit;
 }
 
-// Fallback: manual DB insert
-$key = 'ck_' . bin2hex(random_bytes(20));
-$secret = 'cs_' . bin2hex(random_bytes(20));
-$hashed = hash('sha256', $secret);
+// Vérifier si des clés existent déjà
+$existing = $db->query("SELECT key_id FROM wp_woocommerce_api_keys ORDER BY key_id DESC LIMIT 1");
+if ($existing && $existing->num_rows > 0) {
+    $row = $existing->fetch_assoc();
+    $r2 = $db->query("SELECT consumer_key, consumer_secret FROM wp_woocommerce_api_keys WHERE key_id = " . (int)$row['key_id']);
+    $key_row = $r2->fetch_assoc();
+    echo json_encode([
+        'consumer_key' => $key_row['consumer_key'],
+        'consumer_secret' => $key_row['consumer_secret'],
+        'key_id' => (int)$row['key_id'],
+        'source' => 'existing'
+    ]);
+    exit;
+}
 
-$wpdb->insert($wpdb->prefix . 'woocommerce_api_keys', [
-    'user_id' => $admin_id,
-    'description' => 'OLMEICK Bridge Key',
-    'consumer_key' => $key,
-    'consumer_secret' => $hashed,
-    'nonces' => serialize(['update' => '', 'delete' => '']),
-    'permissions' => 'read_write',
-]);
-$key_id = $wpdb->insert_id;
+// Générer nouvelles clés
+$ck = 'ck_' . bin2hex(random_bytes(20));
+$cs = 'cs_' . bin2hex(random_bytes(20));
 
-echo json_encode([
-    'consumer_key' => $key,
-    'consumer_secret' => $secret,
-    'store_url' => 'https://olmeick-woocommerce.onrender.com',
-    'user_id' => $admin_id,
-    'key_id' => $key_id,
-    'source' => 'manual_db'
-]);
+// WooCommerce utilise hash_hmac('sha256', $key, 'wc-api') pour stocker le consumer_key
+// Le consumer_secret est stocké EN CLAIR
+$ck_hashed = hash_hmac('sha256', $ck, 'wc-api');
+$ts = date('Y-m-d H:i:s');
+
+$sql = $db->prepare("INSERT INTO wp_woocommerce_api_keys (user_id, description, permissions, consumer_key, consumer_secret, nonces, date_created) VALUES (?, ?, ?, ?, ?, ?, ?)");
+$uid = 1;
+$desc = 'OLMEICK Bridge';
+$perm = 'read_write';
+$nonces = '';
+$sql->bind_param('issssss', $uid, $desc, $perm, $ck_hashed, $cs, $nonces, $ts);
+$sql->execute();
+$key_id = $db->insert_id;
+
+if ($key_id > 0) {
+    // Sauvegarder dans un fichier JSON pour api-keys.php
+    $json = json_encode([
+        'consumer_key' => $ck,
+        'consumer_secret' => $cs,
+        'store_url' => 'https://olmeick-woocommerce.onrender.com',
+        'key_id' => $key_id
+    ]);
+    file_put_contents('/var/www/html/wc-api-keys.json', $json);
+    chmod('/var/www/html/wc-api-keys.json', 0644);
+
+    echo json_encode([
+        'consumer_key' => $ck,
+        'consumer_secret' => $cs,
+        'key_id' => $key_id,
+        'source' => 'generated'
+    ]);
+} else {
+    echo json_encode(['error' => 'Insert failed', 'sql_error' => $db->error]);
+}
