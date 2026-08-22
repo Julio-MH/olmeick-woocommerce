@@ -166,6 +166,10 @@ fi
 # Forcer la création des tables WC (sécurité)
 wp wc --version --path="$WP_DIR" --allow-root 2>/dev/null || true
 
+# S'assurer que l'admin a les bonnes permissions WC
+wp user add-role 1 shop_manager --path="$WP_DIR" --allow-root 2>&1 || true
+wp user add-role 1 administrator --path="$WP_DIR" --allow-root 2>&1 || true
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 5. Clés API REST — TOUT en bash + MySQL CLI (pas de PHP)
 # ══════════════════════════════════════════════════════════════════════════════
