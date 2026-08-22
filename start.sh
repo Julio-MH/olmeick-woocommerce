@@ -368,6 +368,80 @@ $result['all_keys'] = array_map(function($k) {
     return array('key_id' => $k->key_id, 'user_id' => $k->user_id, 'consumer_key' => substr($k->consumer_key, 0, 20) . '...', 'permissions' => $k->permissions);
 }, $all_keys);
 
+// FIX MODE: ?fix=1 — crée les clés API via $wpdb (bypass les problèmes bash/MySQL)
+if (isset($_GET['fix']) && $_GET['fix'] === '1') {
+    $result['fix_mode'] = true;
+    
+    // Supprimer les anciennes clés
+    $wpdb->query("DELETE FROM {$wpdb->prefix}woocommerce_api_keys");
+    
+    // Générer les clés
+    $ck = 'ck_' . bin2hex(random_bytes(20));
+    $cs = 'cs_' . bin2hex(random_bytes(20));
+    $ck_hashed = hash_hmac('sha256', $ck, 'wc-api');
+    $now = gmdate('Y-m-d H:i:s');
+    
+    // Insert via $wpdb (WordPress DB layer)
+    $inserted = $wpdb->insert(
+        $wpdb->prefix . 'woocommerce_api_keys',
+        array(
+            'user_id' => 1,
+            'description' => 'OLMEICK Bridge',
+            'permissions' => 'read_write',
+            'consumer_key' => $ck_hashed,
+            'consumer_secret' => $cs,
+            'nonces' => '',
+            'date_created' => $now,
+        ),
+        array('%d', '%s', '%s', '%s', '%s', '%s', '%s')
+    );
+    
+    $result['insert_result'] = $inserted;
+    $result['insert_error'] = $wpdb->last_error;
+    $result['new_ck'] = $ck;
+    $result['new_cs'] = $cs;
+    $result['new_ck_hash'] = $ck_hashed;
+    
+    // Vérifier
+    $count = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}woocommerce_api_keys");
+    $result['new_count'] = $count;
+    
+    // Sauvegarder en JSON aussi
+    $json_data = array(
+        'consumer_key' => $ck,
+        'consumer_secret' => $cs,
+        'store_url' => 'https://olmeick-woocommerce.onrender.com'
+    );
+    file_put_contents('/var/www/html/wc-api-keys.json', json_encode($json_data, JSON_PRETTY_PRINT));
+    
+    // Test auth immédiat
+    $row = $wpdb->get_row($wpdb->prepare(
+        "SELECT * FROM {$wpdb->prefix}woocommerce_api_keys WHERE consumer_key = %s",
+        $ck_hashed
+    ));
+    $result['auth_test'] = array(
+        'found_in_db' => ($row !== null),
+        'secret_match' => $row ? hash_equals($row->consumer_secret, $cs) : false,
+    );
+    
+    if ($row) {
+        wp_set_current_user((int)$row->user_id);
+        $result['auth_test']['current_user_id'] = get_current_user_id();
+        $result['auth_test']['can_edit_posts'] = current_user_can('edit_posts');
+        $result['auth_test']['can_manage_woocommerce'] = current_user_can('manage_woocommerce');
+    }
+    
+    // Test API REST immédiat (depuis le serveur lui-même)
+    $test_url = 'https://olmeick-woocommerce.onrender.com/wp-json/wc/v3/products?consumer_key=' . urlencode($ck) . '&consumer_secret=' . urlencode($cs) . '&per_page=1';
+    $response = @wp_remote_get($test_url, array('timeout' => 10));
+    if (is_wp_error($response)) {
+        $result['rest_test'] = $response->get_error_message();
+    } else {
+        $result['rest_test_status'] = wp_remote_retrieve_response_code($response);
+        $result['rest_test_body'] = substr(wp_remote_retrieve_body($response), 0, 300);
+    }
+}
+
 echo json_encode($result, JSON_PRETTY_PRINT);
 DEBUG_PHP
 chmod 644 "$WP_DIR/debug.php"
