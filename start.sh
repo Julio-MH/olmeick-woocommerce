@@ -197,39 +197,35 @@ php /tmp/fix-wc-caps.php 2>&1 || true
 
 log "[5/5] Clés API REST..."
 
-# Méthode 1: WP-CLI (le plus fiable, gère le hash nativement)
-KEY_OUTPUT=$(wp wc api_key create \
-    --user=1 \
-    --description="OLMEICK Bridge" \
-    --permissions=read_write \
-    --path="$WP_DIR" \
-    --allow-root \
-    --format=json 2>&1)
-log "  → WP-CLI output: $(echo "$KEY_OUTPUT" | head -c 200)"
+# WooCommerce auth: consumer_key est hashé avec hash_hmac('sha256', key, 'wc-api')
+# consumer_secret stocké EN CLAIR en DB
+# Voir: wc_api_hash() dans wc-core-functions.php
 
-CK_RAW=$(echo "$KEY_OUTPUT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('consumer_key',''))" 2>/dev/null || echo "")
-CS_RAW=$(echo "$KEY_OUTPUT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('consumer_secret',''))" 2>/dev/null || echo "")
+CK_RAW=""
+CS_RAW=""
 
-# Méthode 2: PHP direct (charge WooCommerce nativement)
-if [ -z "$CK_RAW" ] || [ -z "$CS_RAW" ]; then
-    log "  → WP-CLI a échoué, essai PHP..."
-    KEY_OUTPUT=$(php -r "
-\$wc = ABSPATH . 'wp-content/plugins/woocommerce/woocommerce.php';
-if (file_exists(\$wc)) { require_once(\$wc); }
-define('WOOCOMMERCE_API_KEYS', true);
-\$key = WC_Generator_API_Keys::generate_key(1, 'read_write', 'OLMEICK Bridge');
-echo json_encode(array('consumer_key' => \$key['consumer_key'], 'consumer_secret' => \$key['consumer_secret']));
-" 2>&1 || echo "")
-    CK_RAW=$(echo "$KEY_OUTPUT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('consumer_key',''))" 2>/dev/null || echo "")
-    CS_RAW=$(echo "$KEY_OUTPUT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('consumer_secret',''))" 2>/dev/null || echo "")
+# Méthode 0: Réutiliser les clés existantes en DB (si déjà en boot précédent)
+EXISTING_KEYS=$(mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -N -e \
+    "SELECT COUNT(*) FROM wp_woocommerce_api_keys" 2>/dev/null || echo "0")
+log "  → Existing keys in DB: $EXISTING_KEYS"
+
+if [ "$EXISTING_KEYS" != "0" ]; then
+    log "  → Keys already exist, using existing ones"
+    # On ne peut pas récupérer les clés en clair (le consumer_key est hashé)
+    # Donc on lit le JSON existant
+    if [ -f "$WP_DIR/wc-api-keys.json" ]; then
+        CK_RAW=$(python3 -c "import json; d=json.load(open('$WP_DIR/wc-api-keys.json')); print(d.get('consumer_key',''))" 2>/dev/null || echo "")
+        CS_RAW=$(python3 -c "import json; d=json.load(open('$WP_DIR/wc-api-keys.json')); print(d.get('consumer_secret',''))" 2>/dev/null || echo "")
+    fi
 fi
 
-# Méthode 3: MySQL direct avec le bon hash HMAC (dernier recours)
+# Méthode 1: MySQL direct (la plus fiable, pas de dépendance PHP/WP-CLI)
 if [ -z "$CK_RAW" ] || [ -z "$CS_RAW" ]; then
-    log "  → PHP a échoué, essai MySQL direct..."
+    log "  → Generating new keys via MySQL..."
     CK_RAW="ck_$(head -c 40 /dev/urandom | od -A n -t x1 | tr -d ' \n' | head -c 40)"
     CS_RAW="cs_$(head -c 40 /dev/urandom | od -A n -t x1 | tr -d ' \n' | head -c 40)"
     CK_HASHED=$(echo -n "$CK_RAW" | openssl dgst -sha256 -hmac "wc-api" | awk '{print $2}')
+
     mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -e \
         "DELETE FROM wp_woocommerce_api_keys" 2>/dev/null || true
     mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -e \
