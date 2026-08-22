@@ -271,75 +271,43 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ══════════════════════════════════════════════════════════════════════════════
-# 5. Clés API REST — via endpoint PHP (wc_generate_api_key)
+# 5. Clés API REST — via MySQL direct avec le bon hash WooCommerce
 # ══════════════════════════════════════════════════════════════════════════════
 
 log "[5/5] Clés API REST..."
 
-# Endpoint PHP pour générer les clés via WooCommerce (accessibles avant rewrite WP)
-cat > "$WP_DIR/api-keys.php" <<'APIKEYS_PHP'
-<?php
-error_reporting(0);
-header('Content-Type: application/json');
-if (file_exists('/var/www/html/wp-load.php')) {
-    require_once('/var/www/html/wp-load.php');
-} else {
-    http_response_code(500);
-    echo json_encode(array('error' => 'WordPress not found'));
-    exit;
-}
-if (!function_exists('wc_generate_api_key')) {
-    if (file_exists(WP_PLUGIN_DIR . '/woocommerce/woocommerce.php')) {
-        require_once WP_PLUGIN_DIR . '/woocommerce/woocommerce.php';
-    }
-}
-if (!function_exists('wc_generate_api_key')) {
-    echo json_encode(array('error' => 'WooCommerce not loaded', 'wc' => defined('WC_VERSION') ? WC_VERSION : 'N/A'));
-    exit;
-}
-global $wpdb;
-$row = $wpdb->get_row("SELECT key_id, consumer_key, consumer_secret, user_id, permissions FROM {$wpdb->prefix}woocommerce_api_keys ORDER BY key_id DESC LIMIT 1");
-if ($row && !empty($row->consumer_key)) {
-    $ck_dec = @base64_decode($row->consumer_key);
-    $cs_dec = @base64_decode($row->consumer_secret);
-    if ($ck_dec && strpos($ck_dec, 'ck_') === 0) {
-        echo json_encode(array(
-            'consumer_key' => $ck_dec,
-            'consumer_secret' => $cs_dec,
-            'key_id' => intval($row->key_id),
-            'source' => 'existing_db'
-        ));
-        exit;
-    }
-}
-$admin = get_user_by('login', 'admin');
-if (!$admin) $admin = get_userdata(1);
-if (!$admin) { echo json_encode(array('error' => 'No admin user')); exit; }
-$result = wc_generate_api_key(array(
-    'user_id' => intval($admin->ID),
-    'description' => 'OLMEICK Bridge',
-    'permissions' => 'read_write'
-));
-if (is_wp_error($result)) {
-    echo json_encode(array('error' => $result->get_error_message()));
-    exit;
-}
-echo json_encode(array(
-    'consumer_key' => $result['consumer_key'],
-    'consumer_secret' => $result['consumer_secret'],
-    'key_id' => intval($result['key_id']),
-    'source' => 'newly_generated'
-));
-APIKEYS_PHP
-chmod 644 "$WP_DIR/api-keys.php"
-log "  -> /api-keys.php created"
+# WooCommerce auth: consumer_key est hashé avec hmac(sha256, key, 'wc-api')
+# Le consumer_secret est stocké EN CLAIR en DB.
+# Voir: get_user_data_by_consumer_key() dans class-wc-rest-authentication.php
+# Voir: wc_api_hash() dans wc-core-functions.php
 
-# Générer les clés et les sauvegarder dans un fichier JSON
-KEY_RESULT=$(php "$WP_DIR/api-keys.php" 2>/dev/null || echo '{"error":"php_failed"}')
-log "  -> Key generation result: $(echo "$KEY_RESULT" | head -c 100)"
+# Supprimer les anciennes clés de la DB avant de régénérer
+mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce \
+    -e "DELETE FROM wp_woocommerce_api_keys;" 2>/dev/null || true
 
-# Extraire consumer_key et consumer_secret du JSON
+KEY_RESULT=$(php -r "
+\$ck = 'ck_' . bin2hex(random_bytes(20));
+\$cs = 'cs_' . bin2hex(random_bytes(20));
+\$ck_hashed = hash_hmac('sha256', \$ck, 'wc-api');
+\$ts = date('Y-m-d H:i:s');
+
+\$sock = '/var/run/mysqld/mysqld.sock';
+\$db = new mysqli('localhost', 'olmeick', 'olmeick_wc_2026', 'woocommerce', 3306, \$sock);
+if (\$db->connect_error) { echo json_encode(array('error' => \$db->connect_error)); exit; }
+
+\$sql = \$db->prepare('INSERT INTO wp_woocommerce_api_keys (user_id, description, permissions, consumer_key, consumer_secret, date_created) VALUES (?, ?, ?, ?, ?, ?)');
+\$uid = 1;
+\$desc = 'OLMEICK Bridge';
+\$perm = 'read_write';
+\$sql->bind_param('isssss', \$uid, \$desc, \$perm, \$ck_hashed, \$cs, \$ts);
+\$sql->execute();
+\$key_id = \$db->insert_id;
+
+echo json_encode(array('consumer_key' => \$ck, 'consumer_secret' => \$cs, 'key_id' => (int)\$key_id, 'source' => 'generated'));
+" 2>&1)
+
+log "  -> Key result: $(echo "$KEY_RESULT" | head -c 120)"
+
 CK=$(echo "$KEY_RESULT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('consumer_key',''))" 2>/dev/null || echo "")
 CS=$(echo "$KEY_RESULT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('consumer_secret',''))" 2>/dev/null || echo "")
 
@@ -353,11 +321,25 @@ if [ -n "$CK" ] && [ -n "$CS" ]; then
 KEYJSON
     chmod 644 "$WP_DIR/wc-api-keys.json"
     log "  -> Consumer Key: $CK"
+    log "  -> Consumer Secret: $CS"
     log "  -> Saved to /wc-api-keys.json"
-    log "  -> Also accessible at /api-keys.php"
 else
-    log "  -> WARNING: Keys empty, will need manual generation"
+    log "  -> WARNING: Keys empty"
 fi
+
+# Créer endpoint PHP pour récupérer les clés
+cat > "$WP_DIR/api-keys.php" <<'APIKEYS_PHP'
+<?php
+error_reporting(0);
+header('Content-Type: application/json');
+$json_file = '/var/www/html/wc-api-keys.json';
+if (file_exists($json_file)) {
+    echo file_get_contents($json_file);
+} else {
+    echo json_encode(array('error' => 'No keys file found'));
+}
+APIKEYS_PHP
+chmod 644 "$WP_DIR/api-keys.php"
 
 touch "$API_KEY_FLAG"
 
