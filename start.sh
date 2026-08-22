@@ -197,57 +197,51 @@ php /tmp/fix-wc-caps.php 2>&1 || true
 
 log "[5/5] Clés API REST..."
 
-# WooCommerce hash: hash_hmac('sha256', consumer_key, 'wc-api')
-# consumer_secret stocké EN CLAIR en DB
+# Méthode 1: WP-CLI (le plus fiable, gère le hash nativement)
+KEY_OUTPUT=$(wp wc api_key create \
+    --user=1 \
+    --description="OLMEICK Bridge" \
+    --permissions=read_write \
+    --path="$WP_DIR" \
+    --allow-root \
+    --format=json 2>&1)
+log "  → WP-CLI output: $(echo "$KEY_OUTPUT" | head -c 200)"
 
-# Générer les clés en bash
-CK_RAW="ck_$(head -c 40 /dev/urandom | od -A n -t x1 | tr -d ' \n' | head -c 40)"
-CS_RAW="cs_$(head -c 40 /dev/urandom | od -A n -t x1 | tr -d ' \n' | head -c 40)"
+CK_RAW=$(echo "$KEY_OUTPUT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('consumer_key',''))" 2>/dev/null || echo "")
+CS_RAW=$(echo "$KEY_OUTPUT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('consumer_secret',''))" 2>/dev/null || echo "")
 
-# Hasher le consumer_key comme WC le fait
-CK_HASHED=$(echo -n "$CK_RAW" | openssl dgst -sha256 -hmac "wc-api" | awk '{print $2}')
-
-log "  → Consumer Key: $CK_RAW"
-log "  → Hash: $CK_HASHED"
-
-# Vérifier que la table existe
-TABLE_EXISTS=$(mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_name='wp_woocommerce_api_keys'" 2>/dev/null || echo "0")
-log "  → Table wp_woocommerce_api_keys exists: $TABLE_EXISTS"
-
-if [ "$TABLE_EXISTS" = "0" ]; then
-    log "  → Creating wp_woocommerce_api_keys table..."
-    mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce <<-'CREATE_TABLE'
-        CREATE TABLE IF NOT EXISTS wp_woocommerce_api_keys (
-            key_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            user_id BIGINT UNSIGNED NOT NULL,
-            description VARCHAR(200) NOT NULL,
-            permissions VARCHAR(10) NOT NULL,
-            consumer_key VARCHAR(64) NOT NULL,
-            consumer_secret VARCHAR(255) NOT NULL,
-            nonces LONGTEXT,
-            last_access DATETIME,
-            date_created DATETIME NOT NULL,
-            PRIMARY KEY (key_id),
-            KEY user_id (user_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE_TABLE
-    log "  → Table created"
+# Méthode 2: PHP direct (charge WooCommerce nativement)
+if [ -z "$CK_RAW" ] || [ -z "$CS_RAW" ]; then
+    log "  → WP-CLI a échoué, essai PHP..."
+    KEY_OUTPUT=$(php -r "
+\$wc = ABSPATH . 'wp-content/plugins/woocommerce/woocommerce.php';
+if (file_exists(\$wc)) { require_once(\$wc); }
+define('WOOCOMMERCE_API_KEYS', true);
+\$key = WC_Generator_API_Keys::generate_key(1, 'read_write', 'OLMEICK Bridge');
+echo json_encode(array('consumer_key' => \$key['consumer_key'], 'consumer_secret' => \$key['consumer_secret']));
+" 2>&1 || echo "")
+    CK_RAW=$(echo "$KEY_OUTPUT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('consumer_key',''))" 2>/dev/null || echo "")
+    CS_RAW=$(echo "$KEY_OUTPUT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('consumer_secret',''))" 2>/dev/null || echo "")
 fi
 
-# Supprimer les anciennes clés
-mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -e "DELETE FROM wp_woocommerce_api_keys" 2>/dev/null || true
+# Méthode 3: MySQL direct avec le bon hash HMAC (dernier recours)
+if [ -z "$CK_RAW" ] || [ -z "$CS_RAW" ]; then
+    log "  → PHP a échoué, essai MySQL direct..."
+    CK_RAW="ck_$(head -c 40 /dev/urandom | od -A n -t x1 | tr -d ' \n' | head -c 40)"
+    CS_RAW="cs_$(head -c 40 /dev/urandom | od -A n -t x1 | tr -d ' \n' | head -c 40)"
+    CK_HASHED=$(echo -n "$CK_RAW" | openssl dgst -sha256 -hmac "wc-api" | awk '{print $2}')
+    NOW=$(date -u +"%Y-%m-%d %H:%M:%S")
+    mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -e \
+        "DELETE FROM wp_woocommerce_api_keys" 2>/dev/null || true
+    mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -e \
+        "INSERT INTO wp_woocommerce_api_keys (user_id, description, permissions, consumer_key, consumer_secret, nonces, date_created) VALUES (1, 'OLMEICK Bridge', 'read_write', '$CK_HASHED', '$CS_RAW', '', '$NOW')" 2>&1
+fi
 
-# Insérer les nouvelles clés
-NOW=$(date -u +"%Y-%m-%d %H:%M:%S")
-mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -e \
-    "INSERT INTO wp_woocommerce_api_keys (user_id, description, permissions, consumer_key, consumer_secret, nonces, date_created) VALUES (1, 'OLMEICK Bridge', 'read_write', '$CK_HASHED', '$CS_RAW', '', '$NOW')" 2>&1
+log "  → Consumer Key: $CK_RAW"
 
-INSERT_OK=$?
-log "  → Insert result: $INSERT_OK"
-
-# Vérifier l'insertion
-VERIFY=$(mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -N -e "SELECT COUNT(*) FROM wp_woocommerce_api_keys" 2>/dev/null || echo "0")
-log "  → Keys in DB: $VERIFY"
+# Vérifier les clés en DB
+DB_KEYS=$(mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce -N -e "SELECT COUNT(*) FROM wp_woocommerce_api_keys" 2>/dev/null || echo "0")
+log "  → Keys in DB: $DB_KEYS"
 
 # Sauvegarder dans un fichier JSON
 cat > "$WP_DIR/wc-api-keys.json" <<KEYJSON
@@ -261,7 +255,7 @@ chmod 644 "$WP_DIR/wc-api-keys.json"
 log "  → Saved to /wc-api-keys.json"
 
 # Test de l'auth
-TEST_AUTH=$(curl -s --max-time 15 "https://olmeick-woocommerce.onrender.com/wp-json/wc/v3/products?consumer_key=$CK_RAW&consumer_secret=$CS_RAW&per_page=1" 2>/dev/null | head -c 100)
+TEST_AUTH=$(curl -s --max-time 15 "https://olmeick-woocommerce.onrender.com/wp-json/wc/v3/products?consumer_key=$CK_RAW&consumer_secret=$CS_RAW&per_page=1" 2>/dev/null | head -c 200)
 log "  → Auth test: $TEST_AUTH"
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -337,6 +331,42 @@ $result['wc_plugin_exists'] = file_exists(ABSPATH . 'wp-content/plugins/woocomme
 // 8. Shop manager role exists
 $role = get_role('shop_manager');
 $result['shop_manager_role_exists'] = ($role !== null);
+
+// 9. Simulate WC REST auth flow
+if (isset($_GET['ck']) && isset($_GET['cs'])) {
+    $ck = sanitize_text_field($_GET['ck']);
+    $cs = $_GET['cs'];
+    if (function_exists('wc_api_hash')) {
+        $result['wc_api_hash_exists'] = true;
+        $hashed = wc_api_hash($ck);
+        $result['ck_hash'] = $hashed;
+        $row = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}woocommerce_api_keys WHERE consumer_key = %s", $hashed
+        ));
+        $result['db_lookup_found'] = ($row !== null);
+        if ($row) {
+            $result['row_user_id'] = (int)$row->user_id;
+            $result['row_permissions'] = $row->permissions;
+            $result['secret_match'] = hash_equals($row->consumer_secret, $cs);
+            $user2 = get_user_by('ID', $row->user_id);
+            if ($user2) {
+                wp_set_current_user($user2->ID);
+                $result['current_user_id'] = get_current_user_id();
+                $result['can_edit_posts'] = current_user_can('edit_posts');
+                $result['can_read'] = current_user_can('read');
+                $result['can_manage_woocommerce'] = current_user_can('manage_woocommerce');
+            }
+        }
+    } else {
+        $result['wc_api_hash_exists'] = false;
+    }
+}
+
+// 10. Count all DB rows
+$all_keys = $wpdb->get_results("SELECT key_id, user_id, consumer_key, permissions FROM {$wpdb->prefix}woocommerce_api_keys");
+$result['all_keys'] = array_map(function($k) {
+    return array('key_id' => $k->key_id, 'user_id' => $k->user_id, 'consumer_key' => substr($k->consumer_key, 0, 20) . '...', 'permissions' => $k->permissions);
+}, $all_keys);
 
 echo json_encode($result, JSON_PRETTY_PRINT);
 DEBUG_PHP
