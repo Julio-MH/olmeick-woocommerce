@@ -75,7 +75,9 @@ RUN curl -sO https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cl
 
 # Script de démarrage
 COPY start.sh /usr/local/bin/start.sh
+COPY generate-keys.php /usr/local/bin/generate-keys.php
 RUN chmod +x /usr/local/bin/start.sh
+RUN chmod 644 /usr/local/bin/generate-keys.php
 
 # Port Render
 EXPOSE 8080
