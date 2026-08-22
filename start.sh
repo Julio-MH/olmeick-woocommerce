@@ -281,33 +281,13 @@ log "[5/5] Clés API REST..."
 # Voir: get_user_data_by_consumer_key() dans class-wc-rest-authentication.php
 # Voir: wc_api_hash() dans wc-core-functions.php
 
-# Supprimer les anciennes clés de la DB avant de régénérer
-mysql --socket="$MYSQL_SOCKET" -u olmeick -polmeick_wc_2026 woocommerce \
-    -e "DELETE FROM wp_woocommerce_api_keys;" 2>/dev/null || true
+# Copier le script de génération de clés
+cp /usr/local/bin/generate-keys.php "$WP_DIR/generate-keys.php" 2>/dev/null || true
+chmod 644 "$WP_DIR/generate-keys.php" 2>/dev/null || true
 
-KEY_RESULT=$(php -r "
-\$ck = 'ck_' . bin2hex(random_bytes(20));
-\$cs = 'cs_' . bin2hex(random_bytes(20));
-\$ck_hashed = hash_hmac('sha256', \$ck, 'wc-api');
-\$ts = date('Y-m-d H:i:s');
-
-\$sock = '/var/run/mysqld/mysqld.sock';
-\$db = new mysqli('localhost', 'olmeick', 'olmeick_wc_2026', 'woocommerce', 3306, \$sock);
-if (\$db->connect_error) { echo json_encode(array('error' => \$db->connect_error)); exit; }
-
-\$sql = \$db->prepare('INSERT INTO wp_woocommerce_api_keys (user_id, description, permissions, consumer_key, consumer_secret, nonces, date_created) VALUES (?, ?, ?, ?, ?, ?, ?)');
-\$uid = 1;
-\$desc = 'OLMEICK Bridge';
-\$perm = 'read_write';
-\$nonces = '';
-\$sql->bind_param('issssss', \$uid, \$desc, \$perm, \$ck_hashed, \$cs, \$nonces, \$ts);
-\$sql->execute();
-\$key_id = \$db->insert_id;
-
-echo json_encode(array('consumer_key' => \$ck, 'consumer_secret' => \$cs, 'key_id' => (int)\$key_id, 'source' => 'generated'));
-" 2>&1)
-
-log "  -> Key result: $(echo "$KEY_RESULT" | head -c 120)"
+# Générer les clés via le script PHP dédié
+KEY_RESULT=$(php "$WP_DIR/generate-keys.php" 2>&1)
+log "  -> Key result: $(echo "$KEY_RESULT" | head -c 150)"
 
 CK=$(echo "$KEY_RESULT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('consumer_key',''))" 2>/dev/null || echo "")
 CS=$(echo "$KEY_RESULT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('consumer_secret',''))" 2>/dev/null || echo "")
