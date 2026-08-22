@@ -219,32 +219,35 @@ if [ "$EXISTING_KEYS" != "0" ]; then
     fi
 fi
 
-# Méthode 1: PHP $wpdb (pas mysql CLI qui échoue silencieusement)
+# Méthode 1: PHP via fichier dédié (le mysql CLI et php -r échouent au boot)
 if [ -z "$CK_RAW" ] || [ -z "$CS_RAW" ]; then
-    log "  → Generating new keys via PHP..."
+    log "  → Generating new keys via PHP file..."
     CK_RAW="ck_$(head -c 40 /dev/urandom | od -A n -t x1 | tr -d ' \n' | head -c 40)"
     CS_RAW="cs_$(head -c 40 /dev/urandom | od -A n -t x1 | tr -d ' \n' | head -c 40)"
     CK_HASHED=$(echo -n "$CK_RAW" | openssl dgst -sha256 -hmac "wc-api" | awk '{print $2}')
 
-    php -r "
-    define('ABSPATH', '/var/www/html/');
-    require_once ABSPATH . 'wp-load.php';
-    global \$wpdb;
-    \$wpdb->delete(\$wpdb->prefix . 'woocommerce_api_keys');
-    \$wpdb->insert(\$wpdb->prefix . 'woocommerce_api_keys', array(
-        'user_id' => 1,
-        'description' => 'OLMEICK Bridge',
-        'permissions' => 'read_write',
-        'consumer_key' => '$CK_HASHED',
-        'consumer_secret' => '$CS_RAW',
-        'nonces' => ''
-    ));
-    if (\$wpdb->insert_id > 0) {
-        echo 'OK';
-    } else {
-        echo 'ERROR: ' . \$wpdb->last_error;
-    }
-    " 2>&1
+    cat > /tmp/insert-keys.php <<'INSERTPHP'
+<?php
+define('ABSPATH', '/var/www/html/');
+require_once ABSPATH . 'wp-load.php';
+global $wpdb;
+$wpdb->delete($wpdb->prefix . 'woocommerce_api_keys');
+$wpdb->insert($wpdb->prefix . 'woocommerce_api_keys', array(
+    'user_id' => 1,
+    'description' => 'OLMEICK Bridge',
+    'permissions' => 'read_write',
+    'consumer_key' => $_ENV['CK_HASHED'],
+    'consumer_secret' => $_ENV['CS_RAW'],
+    'nonces' => ''
+));
+if ($wpdb->insert_id > 0) {
+    echo 'INSERTED:' . $wpdb->insert_id . "\n";
+} else {
+    echo 'ERROR:' . $wpdb->last_error . "\n";
+}
+INSERTPHP
+
+    CK_HASHED="$CK_HASHED" CS_RAW="$CS_RAW" php /tmp/insert-keys.php 2>&1
 fi
 
 log "  → Consumer Key: $CK_RAW"
