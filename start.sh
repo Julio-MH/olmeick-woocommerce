@@ -167,13 +167,29 @@ fi
 wp wc --version --path="$WP_DIR" --allow-root 2>/dev/null || true
 
 # S'assurer que l'admin a les bonnes permissions WC
-wp user update 1 --role=shop_manager --path="$WP_DIR" --allow-root 2>&1 || true
-# Ajouter les caps WC directement (au cas ou le role ne suffit pas)
-wp user add-cap 1 manage_woocommerce --path="$WP_DIR" --allow-root 2>&1 || true
-wp user add-cap 1 edit_products --path="$WP_DIR" --allow-root 2>&1 || true
-wp user add-cap 1 publish_products --path="$WP_DIR" --allow-root 2>&1 || true
-wp user add-cap 1 edit_others_products --path="$WP_DIR" --allow-root 2>&1 || true
-wp user add-cap 1 read_private_products --path="$WP_DIR" --allow-root 2>&1 || true
+# On fait TOUT en PHP direct (pas WP-CLI) car wp user add-cap échoue silencieusement au boot
+cat > /tmp/fix-wc-caps.php <<'FIXCAPS'
+<?php
+define('ABSPATH', '/var/www/html/');
+define('WPINC', 'wp-includes');
+if (file_exists(ABSPATH . 'wp-load.php')) {
+    require_once ABSPATH . 'wp-load.php';
+    $user = new WP_User(1);
+    // Ajouter le rôle shop_manager (inclut manage_woocommerce)
+    $user->add_role('shop_manager');
+    // Ajouter les caps individuelles aussi (backup)
+    $user->add_cap('manage_woocommerce');
+    $user->add_cap('edit_products');
+    $user->add_cap('publish_products');
+    $user->add_cap('edit_others_products');
+    $user->add_cap('read_private_products');
+    $user->add_cap('list_users');
+    echo "WC caps added for user 1. Caps: " . json_encode(array_keys($user->allcaps)) . "\n";
+} else {
+    echo "ERROR: wp-load.php not found\n";
+}
+FIXCAPS
+php /tmp/fix-wc-caps.php 2>&1 || true
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 5. Clés API REST — TOUT en bash + MySQL CLI (pas de PHP)
@@ -265,6 +281,68 @@ APIKEYS_PHP
 chmod 644 "$WP_DIR/api-keys.php"
 
 # ══════════════════════════════════════════════════════════════════════════════
+# debug.php — diagnostic endpoint (supprimer en prod)
+# ══════════════════════════════════════════════════════════════════════════════
+
+cat > "$WP_DIR/debug.php" <<'DEBUG_PHP'
+<?php
+header('Content-Type: application/json');
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
+
+$result = array();
+
+// 1. Check if WP loaded
+$result['wp_loaded'] = defined('ABSPATH');
+
+// 2. Load WP
+if (!function_exists('get_userdata')) {
+    define('ABSPATH', dirname(__FILE__) . '/');
+    define('WPINC', 'wp-includes');
+    @require_once ABSPATH . 'wp-load.php';
+}
+$result['wp_functions'] = function_exists('get_userdata');
+
+// 3. Get user 1 data
+$user = get_userdata(1);
+if ($user) {
+    $result['user_id'] = 1;
+    $result['user_login'] = $user->user_login;
+    $result['user_email'] = $user->user_email;
+    $result['roles'] = $user->roles;
+    $result['allcaps'] = array_keys($user->allcaps);
+    $result['has_manage_woocommerce'] = $user->has_cap('manage_woocommerce');
+    $result['has_edit_products'] = $user->has_cap('edit_products');
+    $result['has_read'] = $user->has_cap('read');
+} else {
+    $result['error'] = 'User ID 1 not found!';
+}
+
+// 4. Check WC tables
+global $wpdb;
+$tables = $wpdb->get_col("SHOW TABLES LIKE '%woocommerce%'", 0);
+$result['wc_tables'] = $tables;
+
+// 5. Check API keys count
+$keys = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}woocommerce_api_keys");
+$result['api_keys_count'] = $keys;
+
+// 6. Check WC options
+$wc_active = $wpdb->get_var("SELECT option_value FROM {$wpdb->prefix}options WHERE option_name = 'active_plugins'");
+$result['active_plugins'] = $wc_active;
+
+// 7. Plugin file exists
+$result['wc_plugin_exists'] = file_exists(ABSPATH . 'wp-content/plugins/woocommerce/woocommerce.php');
+
+// 8. Shop manager role exists
+$role = get_role('shop_manager');
+$result['shop_manager_role_exists'] = ($role !== null);
+
+echo json_encode($result, JSON_PRETTY_PRINT);
+DEBUG_PHP
+chmod 644 "$WP_DIR/debug.php"
+
+# ══════════════════════════════════════════════════════════════════════════════
 # PERMISSIONS + HTACCESS
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -279,6 +357,7 @@ cat > "$WP_DIR/.htaccess" <<'HTEOF'
 RewriteEngine On
 RewriteRule ^health$ - [L]
 RewriteRule ^api-keys\.php$ - [L]
+RewriteRule ^debug\.php$ - [L]
 </IfModule>
 # BEGIN WordPress
 <IfModule mod_rewrite.c>
